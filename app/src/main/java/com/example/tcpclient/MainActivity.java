@@ -48,6 +48,8 @@ public class MainActivity extends AppCompatActivity {
 
     private Spinner pendingSpinner;
     private List<String> pendingRawUsers;
+    private int pendingChatTargetId = -1;
+    private String pendingChatName = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -126,25 +128,86 @@ public class MainActivity extends AppCompatActivity {
                 } catch (Exception e) { e.printStackTrace(); }
                 break;
 
+            case GET_BUNDLE_RESPONSE:
+                try {
+                    ChatDtos.GetBundleResponseDto bundle = gson.fromJson(packet.getPayload(), ChatDtos.GetBundleResponseDto.class);
+
+                    // Verificam daca e raspunsul asteptat
+                    if (bundle.targetUserId != pendingChatTargetId) break;
+
+                    // 1. Conversie String -> Chei Reale
+                    java.security.PublicKey bobIdentityKey = chat.CryptoHelper.stringToDilithiumPublic(bundle.identityKeyPublic);
+                    java.security.PublicKey bobPreKey = chat.CryptoHelper.stringToKyberPublic(bundle.signedPreKeyPublic);
+                    byte[] bobSignature = android.util.Base64.decode(bundle.signature, android.util.Base64.NO_WRAP);
+
+                    // 2. Verificare Semnatura (Dilithium)
+                    boolean isSigValid = chat.CryptoHelper.verifySignature(bobIdentityKey, bobPreKey.getEncoded(), bobSignature);
+                    if (!isSigValid) {
+                        Toast.makeText(this, "⚠️ SECURITY ALERT: Semnatura invalida!", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+
+                    // 3. Generare Secret (Kyber Encapsulate)
+                    chat.CryptoHelper.KEMResult kemResult = chat.CryptoHelper.encapsulate(bobPreKey);
+
+                    String ciphertextBase64 = android.util.Base64.encodeToString(kemResult.wrappedKey, android.util.Base64.NO_WRAP);
+                    String mySecretBase64 = android.util.Base64.encodeToString(kemResult.aesKey.getEncoded(), android.util.Base64.NO_WRAP);
+
+                    // 4. Salvam secretul temporar in LocalStorage (ca sa il avem cand vine confirmarea)
+                    LocalStorage.pendingSecretKey = mySecretBase64;
+
+                    // 5. Trimitem cererea de creare chat (+ Plicul pentru Bob)
+                    ChatDtos.CreateGroupDto createDto = new ChatDtos.CreateGroupDto(pendingChatTargetId, pendingChatName, ciphertextBase64);
+                    NetworkPacket createReq = new NetworkPacket(PacketType.CREATE_CHAT_REQUEST, TcpConnection.getCurrentUserId(), createDto);
+                    TcpConnection.sendPacket(createReq);
+
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    Toast.makeText(this, "Eroare Crypto: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+                break;
+
             case CREATE_CHAT_BROADCAST:
-                GroupChat newChat = gson.fromJson(packet.getPayload(), GroupChat.class);
+                // Acum primim un DTO complex, nu direct GroupChat
+                ChatDtos.NewChatBroadcastDto broadcastDto = gson.fromJson(packet.getPayload(), ChatDtos.NewChatBroadcastDto.class);
+                GroupChat newChat = broadcastDto.groupInfo;
 
                 if (adapter != null) adapter.setEnabled(true);
                 if (dialog != null && dialog.isShowing()) dialog.dismiss();
 
-                if (newChat.getId() <= 0) {
-                    Log.e("CHAT_DEBUG", "Chat primit cu ID 0 sau invalid. Ignor.");
-                    refreshConversations();
+                if (newChat.getId() <= 0) break;
 
-                    break;
-                }
-
+                // UI Update
                 LocalStorage.getCurrentUserGroupChats().add(0, newChat);
                 adapter.setGroupChats(LocalStorage.getCurrentUserGroupChats());
-
                 adapter.notifyDataSetChanged();
                 recyclerView.scrollToPosition(0);
 
+                // --- LOGICA SALVARE CHEIE ---
+                ClientKeyManager keyMgr = new ClientKeyManager(this);
+
+                // Daca am primit ciphertext -> SUNT BOB (Invitatul)
+                if (broadcastDto.keyCiphertext != null && !broadcastDto.keyCiphertext.isEmpty()) {
+                    try {
+                        byte[] cipherBytes = android.util.Base64.decode(broadcastDto.keyCiphertext, android.util.Base64.NO_WRAP);
+
+                        String myPrivStr = keyMgr.getMyPreKeyPrivateKey();
+                        java.security.PrivateKey myPriv = chat.CryptoHelper.stringToKyberPrivate(myPrivStr);
+
+                        // Decapsulate
+                        javax.crypto.SecretKey shared = chat.CryptoHelper.decapsulate(myPriv, cipherBytes);
+                        String keyBase64 = android.util.Base64.encodeToString(shared.getEncoded(), android.util.Base64.NO_WRAP);
+
+                        keyMgr.saveKey(newChat.getId(), keyBase64);
+                        System.out.println("✅ [BOB] Cheie Post-Quantum salvata!");
+                    } catch (Exception e) { e.printStackTrace(); }
+                }
+                // Daca nu am primit ciphertext -> SUNT ALICE (Creatorul) -> Iau din pending
+                else if (LocalStorage.pendingSecretKey != null) {
+                    keyMgr.saveKey(newChat.getId(), LocalStorage.pendingSecretKey);
+                    LocalStorage.pendingSecretKey = null; // Curatam
+                    System.out.println("✅ [ALICE] Cheie salvata!");
+                }
                 break;
 
             case RENAME_CHAT_BROADCAST:
@@ -191,11 +254,11 @@ public class MainActivity extends AppCompatActivity {
         TcpConnection.sendPacket(packet);
     }
 
-    private void performCreateChat(int targetId, String groupName) {
-        ChatDtos.CreateGroupDto dto = new ChatDtos.CreateGroupDto(targetId, groupName);
-        NetworkPacket req = new NetworkPacket(PacketType.CREATE_CHAT_REQUEST, TcpConnection.getCurrentUserId(), dto);
-        TcpConnection.sendPacket(req);
-    }
+//    private void performCreateChat(int targetId, String groupName) {
+//        ChatDtos.CreateGroupDto dto = new ChatDtos.CreateGroupDto(targetId, groupName);
+//        NetworkPacket req = new NetworkPacket(PacketType.CREATE_CHAT_REQUEST, TcpConnection.getCurrentUserId(), dto);
+//        TcpConnection.sendPacket(req);
+//    }
 
     private void performLogout() {
         NetworkPacket p = new NetworkPacket(PacketType.LOGOUT, TcpConnection.getCurrentUserId());
@@ -313,7 +376,15 @@ public class MainActivity extends AppCompatActivity {
                     if (index < 0 || index >= rawUserStrings.size()) { Toast.makeText(this, "No user selected!", Toast.LENGTH_SHORT).show(); adapter.setEnabled(true); return; }
                     String selectedRaw = rawUserStrings.get(index);
                     int targetId = Integer.parseInt(selectedRaw.split(",")[0]);
-                    performCreateChat(targetId, groupName);
+//                    performCreateChat(targetId, groupName);
+                    this.pendingChatTargetId = targetId;
+                    this.pendingChatName = groupName;
+
+                    // 2. Cerem cheile lui Bob (Handshake)
+                    Toast.makeText(MainActivity.this, "Handshake: Cer cheile...", Toast.LENGTH_SHORT).show();
+
+                    NetworkPacket packet = new NetworkPacket(PacketType.GET_BUNDLE_REQUEST, TcpConnection.getCurrentUserId(), new ChatDtos.GetBundleRequestDto(targetId));
+                    TcpConnection.sendPacket(packet);
                 }).create();
         dialog.setCancelable(false);
         dialog.setCanceledOnTouchOutside(false);

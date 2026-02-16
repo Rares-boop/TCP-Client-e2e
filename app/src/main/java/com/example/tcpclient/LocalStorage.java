@@ -7,6 +7,7 @@ import chat.GroupChat;
 
 public class LocalStorage {
     public static List<GroupChat> currentUserGroupChats = new ArrayList<>();
+    public static String pendingSecretKey = null;
 
     public static List<GroupChat> getCurrentUserGroupChats() {
         return currentUserGroupChats;
