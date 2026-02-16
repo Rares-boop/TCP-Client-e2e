@@ -177,11 +177,26 @@ public class MainActivity extends AppCompatActivity {
 
                 if (newChat.getId() <= 0) break;
 
+                boolean chatExistsInUI = false;
+                List<GroupChat> currentListUi = LocalStorage.getCurrentUserGroupChats();
+
+                for (GroupChat existing : currentListUi) {
+                    if (existing.getId() == newChat.getId()) {
+                        chatExistsInUI = true;
+                        break;
+                    }
+                }
+
                 // UI Update
-                LocalStorage.getCurrentUserGroupChats().add(0, newChat);
-                adapter.setGroupChats(LocalStorage.getCurrentUserGroupChats());
-                adapter.notifyDataSetChanged();
-                recyclerView.scrollToPosition(0);
+                if (!chatExistsInUI) {
+                    LocalStorage.getCurrentUserGroupChats().add(0, newChat);
+                    adapter.setGroupChats(LocalStorage.getCurrentUserGroupChats());
+                    adapter.notifyDataSetChanged();
+                    recyclerView.scrollToPosition(0);
+                    System.out.println("✅ [UI] Chat nou adaugat: " + newChat.getName());
+                } else {
+                    System.out.println("⚠️ [UI] Chatul exista deja (venit prin GET_CHATS). Ignor adaugarea vizuala.");
+                }
 
                 // --- LOGICA SALVARE CHEIE ---
                 ClientKeyManager keyMgr = new ClientKeyManager(this);
