@@ -1,0 +1,21 @@
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+
+    <!-- Colțuri rotunde -->
+    <corners android:radius="25dp" />
+
+    <!-- Culoare de fundal -->
+    <solid android:color="@android:color/white" />
+
+    <!-- Border subtire gri -->
+    <stroke
+        android:width="1dp"
+        android:color="#CCCCCC" />
+
+    <!-- Padding intern -->
+    <padding
+        android:left="12dp"
+        android:top="8dp"
+        android:right="12dp"
+        android:bottom="8dp" />
+</shape>
