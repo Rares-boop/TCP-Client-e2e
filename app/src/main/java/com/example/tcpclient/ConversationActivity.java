@@ -114,6 +114,8 @@ public class ConversationActivity extends AppCompatActivity {
 
     private void handlePacket(NetworkPacket packet) {
         try {
+            SecretKey chatKey = keyManager.getKey(currentChatId);
+
             switch (packet.getType()) {
                 case GET_MESSAGES_RESPONSE:
                     Type listType = new TypeToken<List<Message>>(){}.getType();
@@ -121,6 +123,14 @@ public class ConversationActivity extends AppCompatActivity {
 
                     messages.clear();
                     if (history != null) {
+                        for (Message m : history) {
+                            try {
+                                String decryptedText = CryptoHelper.unpackAndDecrypt(chatKey, m.getContent());
+                                m.setContent(decryptedText.getBytes());
+                            } catch (Exception e) {
+                                m.setContent("[Mesaj nedecriptabil]".getBytes());
+                            }
+                        }
                         messages.addAll(history);
                     }
                     messageAdapter.notifyDataSetChanged();
@@ -130,6 +140,12 @@ public class ConversationActivity extends AppCompatActivity {
                 case RECEIVE_MESSAGE:
                     Message msg = gson.fromJson(packet.getPayload(), Message.class);
                     if (msg != null) {
+                        try {
+                            String decryptedText = CryptoHelper.unpackAndDecrypt(chatKey, msg.getContent());
+                            msg.setContent(decryptedText.getBytes());
+                        } catch (Exception e) {
+                            msg.setContent("[Eroare decriptare]".getBytes());
+                        }
                         messages.add(msg);
                         messageAdapter.notifyDataSetChanged();
                         scrollToBottom();
@@ -142,9 +158,15 @@ public class ConversationActivity extends AppCompatActivity {
                     for (int i = 0; i < messages.size(); i++) {
                         if (messages.get(i).getId() == editDto.messageId) {
 
-                            byte[] finalContent = editDto.newContent;
+                            try {
+                                String decryptedEdit = CryptoHelper.unpackAndDecrypt(chatKey, editDto.newContent);
+                                messages.get(i).setContent(decryptedEdit.getBytes());
 
-                            messages.get(i).setContent(finalContent);
+                            } catch (Exception e) {
+                                messages.get(i).setContent("[Eroare decriptare edit]".getBytes());
+                                e.printStackTrace();
+                            }
+
                             messageAdapter.notifyItemChanged(i);
                             break;
                         }
@@ -181,7 +203,15 @@ public class ConversationActivity extends AppCompatActivity {
 
 
         try {
-            Message msg = new Message(0, text.getBytes(),0, TcpConnection.getCurrentUserId(), currentChatId);
+            SecretKey chatKey = keyManager.getKey(currentChatId);
+            if (chatKey == null) {
+                Toast.makeText(this, "Lipsă cheie criptare! Handshake incomplet.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            byte[] encryptedData = CryptoHelper.encryptAndPack(chatKey, text);
+
+            Message msg = new Message(0, encryptedData,0, TcpConnection.getCurrentUserId(), currentChatId);
             NetworkPacket packet = new NetworkPacket(PacketType.SEND_MESSAGE, TcpConnection.getCurrentUserId(), msg);
             TcpConnection.sendPacket(packet);
 
@@ -193,7 +223,10 @@ public class ConversationActivity extends AppCompatActivity {
 
     private void performEdit(int messageId, String newText) {
         try {
-            ChatDtos.EditMessageDto dto = new ChatDtos.EditMessageDto(messageId, newText.getBytes());
+            SecretKey chatKey = keyManager.getKey(currentChatId);
+            byte[] encryptedNewContent = CryptoHelper.encryptAndPack(chatKey, newText);
+
+            ChatDtos.EditMessageDto dto = new ChatDtos.EditMessageDto(messageId, encryptedNewContent);
             NetworkPacket packet = new NetworkPacket(PacketType.EDIT_MESSAGE_REQUEST, TcpConnection.getCurrentUserId(), dto);
             TcpConnection.sendPacket(packet);
         } catch (Exception e) {
